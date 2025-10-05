@@ -78,7 +78,7 @@ JSONVar getSong(String song_name) { // change to string??
   // return payload;
 }
 
-JSONVar getDevice(String student_id, String device) {
+JSONVar getPreferenceSong(String student_id, String device) {
   return httpGET("/preference?id=" + student_id + "&key=" + device);
   // if (payload == "") return JSONVar();
 
@@ -135,7 +135,7 @@ void setup()
   // Serial.println("POST DEVICE");
   // postDevice(STUDENT_ID, DEVICE1_NAME, "harrypotter");
   Serial.println("GET DEVICE");
-  getDevice(STUDENT_ID, DEVICE1_NAME);
+  getPreferenceSong(STUDENT_ID, DEVICE1_NAME);
   Serial.println("GET SONG");
   getSong("gameofthrones");
 }
