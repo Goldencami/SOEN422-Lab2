@@ -1,6 +1,7 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Arduino_JSON.h>
+#include <BluetoothSerial.h>
 #define BUZZER_PIN 21
 
 // the following variables are unsigned longs because the time, measured in
@@ -24,7 +25,7 @@ struct Song {
 };
 
 void play(Song object) {
-  int notes = sizeof(object.melody) / sizeof(object.melody[0]) / 2;
+  int notes = object.length / 2;
   int wholenote = (60000 * 4) / object.tempo;
   int divider = 0, noteDuration = 0;
 
@@ -55,7 +56,7 @@ void play(Song object) {
 
 Song httpGET(String endpoint) {
   Song randomSong;
-  if (WiFi.status() != WL_CONNECTED) return randomSong;
+  if (WiFi.status() != WL_CONNECTED) return randomSong; // don't continue if there's no wifi
 
   HTTPClient http;
   http.begin(BASE_URL + endpoint);
@@ -153,8 +154,7 @@ void setup() {
   WiFi.begin(ssid, password);
   Serial.println("Connecting");
 
-  while (WiFi.status() != WL_CONNECTED)
-  {
+  while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
@@ -170,9 +170,9 @@ void setup() {
   postDevice(STUDENT_ID, DEVICE1_NAME, "harrypotter");
   Serial.println("GET DEVICE");
   Song toPlay = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
-  Serial.println("GET SONG");
-  getSong("gameofthrones");
   play(toPlay);
+  // Serial.println("GET SONG");
+  // getSong("gameofthrones");
 }
 
 void loop() {
