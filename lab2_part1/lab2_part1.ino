@@ -3,19 +3,33 @@
 #include <Arduino_JSON.h>
 #include <BluetoothSerial.h>
 #define BUZZER_PIN 21
+#define BT_DISCOVER_TIME 10000
+
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
+
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
+#endif
 
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastTime = 0;
 unsigned long timerDelay = 5000;
 
-const char *ssid = "BELL892";
-const char *password = "1E7C373CF727";
+// const char *ssid = "BELL892";
+// const char *password = "1E7C373CF727";
+const char *ssid = "iPhoneCamila"; // my hotspot
+const char *password = "Nicolas19";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
-String DEVICE1_NAME = "Camila_iPhone16";
+String DEVICE1_NAME = "iPhoneCamila";
 String DEVICE2_NAME = "Camila_MBP";
+
+BluetoothSerial SerialBT;
+static bool btScanSync = true;
 
 struct Song {
   String name = "undefined";
@@ -151,9 +165,27 @@ void postDevice(String student_id, String device, String song_name) {
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
+
+  //************************
+  //   SETTING BLUETOOTH
+  //************************
+  SerialBT.begin("ESP32test");  //Bluetooth device name
+  Serial.println("The device started, now you can pair it with bluetooth!");
+  if (btScanSync) {
+    Serial.println("Starting synchronous discovery... ");
+    BTScanResults *pResults = SerialBT.discover(BT_DISCOVER_TIME);
+    if (pResults) {
+      pResults->dump(&Serial);
+    } else {
+      Serial.println("Error on BT Scan, no result!");
+    }
+  }
+
+  //************************
+  //     SETTING WIFI
+  //************************
   WiFi.begin(ssid, password);
   Serial.println("Connecting");
-
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
