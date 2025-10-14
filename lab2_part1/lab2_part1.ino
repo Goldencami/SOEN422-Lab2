@@ -13,11 +13,6 @@
 #error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
 #endif
 
-// the following variables are unsigned longs because the time, measured in
-// milliseconds, will quickly become a bigger number than can be stored in an int.
-unsigned long lastTime = 0;
-unsigned long timerDelay = 5000;
-
 // const char *ssid = "BELL892";
 // const char *password = "1E7C373CF727";
 const char *ssid = "iPhoneCamila"; // my hotspot
@@ -39,6 +34,9 @@ struct Song {
   int length = 0;
 };
 
+Song toPlay;
+bool isPlaying = false;
+
 void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
   Serial.printf("Found a device asynchronously: %s\n", pDevice->toString().c_str());
   discoveredDevice = pDevice->getName().c_str();
@@ -48,6 +46,7 @@ void play(Song object) {
   int notes = object.length / 2;
   int wholenote = (60000 * 4) / object.tempo;
   int divider = 0, noteDuration = 0;
+  isPlaying = true;
 
   // iterate over the notes of the melody.
   // Remember, the array is twice the number of notes (notes + durations)
@@ -72,6 +71,8 @@ void play(Song object) {
     // stop the waveform generation before the next note.
     noTone(BUZZER_PIN);
   }
+
+  isPlaying = false;
 }
 
 Song httpGET(String endpoint) {
@@ -197,19 +198,12 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("Connected to WiFi!");
-  // Serial.print("Connected to WiFi network with IP Address: ");
-  // Serial.println(WiFi.localIP());
-
-  Serial.println("GET RANDOM SONG");
-  httpGET("/song");
 
   Serial.println("POST DEVICE");
   postDevice(STUDENT_ID, DEVICE1_NAME, "harrypotter");
 
   Serial.println("GET DEVICE");
-  Song toPlay = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
-  // Serial.println("GET SONG");
-  // getSong("gameofthrones");
+  toPlay = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
 
   // Start Bluetooth without scanning
   SerialBT.begin("ESP32test");  //Bluetooth device name
@@ -226,13 +220,12 @@ void setup() {
       Serial.println("Error on discoverAsync f.e. not working after a \"connect\"");
     }
   }
+}
 
-  if (toPlay.length > 0 && discoveredDevice == DEVICE1_NAME) {
+void loop() {
+  if (toPlay.length > 0 && discoveredDevice == DEVICE1_NAME && !isPlaying) {
     play(toPlay);
   } else {
     Serial.println("No song received, skipping playback.");
   }
-}
-
-void loop() {
 }
