@@ -3,33 +3,34 @@
 #include <ArduinoJson.h>
 #include <BluetoothSerial.h>
 #define BUZZER_PIN 21
-// #define BT_DISCOVER_TIME 10000
+#define BT_DISCOVER_TIME 10000
 
-// #if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
-// #error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
-// #endif
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please run `make menuconfig` to and enable it
+#endif
 
-// #if !defined(CONFIG_BT_SPP_ENABLED)
-// #error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
-// #endif
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
+#endif
 
 // the following variables are unsigned longs because the time, measured in
 // milliseconds, will quickly become a bigger number than can be stored in an int.
 unsigned long lastTime = 0;
 unsigned long timerDelay = 5000;
 
-const char *ssid = "BELL892";
-const char *password = "1E7C373CF727";
-// const char *ssid = "iPhoneCamila"; // my hotspot
-// const char *password = "Nicolas19";
+// const char *ssid = "BELL892";
+// const char *password = "1E7C373CF727";
+const char *ssid = "iPhoneCamila"; // my hotspot
+const char *password = "Nicolas19";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
 String DEVICE1_NAME = "iPhoneCamila";
 String DEVICE2_NAME = "Camila_MBP";
 
-// BluetoothSerial SerialBT;
-// static bool btScanSync = true;
+BluetoothSerial SerialBT;
+static bool btScanAsync = true;
+String discoveredDevice = "";
 
 struct Song {
   String name = "undefined";
@@ -37,6 +38,11 @@ struct Song {
   int melody[50];
   int length = 0;
 };
+
+void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
+  Serial.printf("Found a device asynchronously: %s\n", pDevice->toString().c_str());
+  discoveredDevice = pDevice->getName().c_str();
+}
 
 void play(Song object) {
   int notes = object.length / 2;
@@ -183,45 +189,49 @@ void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
 
-  // //************************
-  // //   SETTING BLUETOOTH
-  // //************************
-  // SerialBT.begin("ESP32test");  //Bluetooth device name
-  // Serial.println("The device started, now you can pair it with bluetooth!");
-  // if (btScanSync) {
-  //   Serial.println("Starting synchronous discovery... ");
-  //   BTScanResults *pResults = SerialBT.discover(BT_DISCOVER_TIME);
-  //   if (pResults) {
-  //     pResults->dump(&Serial);
-  //   } else {
-  //     Serial.println("Error on BT Scan, no result!");
-  //   }
-  // }
-
-  //************************
-  //     SETTING WIFI
-  //************************
+  // Connect WiFi first
   WiFi.begin(ssid, password);
   Serial.println("Connecting");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-
-  Serial.println("");
-  Serial.print("Connected to WiFi network with IP Address: ");
-  Serial.println(WiFi.localIP());
-  Serial.println("Timer set to 5 seconds (timerDelay variable), it will take 5 seconds before publishing the first reading.");
+  Serial.println("Connected to WiFi!");
+  // Serial.print("Connected to WiFi network with IP Address: ");
+  // Serial.println(WiFi.localIP());
 
   Serial.println("GET RANDOM SONG");
   httpGET("/song");
+
   Serial.println("POST DEVICE");
   postDevice(STUDENT_ID, DEVICE1_NAME, "harrypotter");
+
   Serial.println("GET DEVICE");
   Song toPlay = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
-  play(toPlay);
   // Serial.println("GET SONG");
   // getSong("gameofthrones");
+
+  // Start Bluetooth without scanning
+  SerialBT.begin("ESP32test");  //Bluetooth device name
+  Serial.println("The device started, now you can pair it with bluetooth!");
+  if (btScanAsync) {
+    Serial.print("Starting asynchronous discovery... ");
+    if (SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
+      Serial.println("Findings will be reported in \"btAdvertisedDeviceFound\"");
+      delay(10000);
+      Serial.print("Stopping discoverAsync... ");
+      SerialBT.discoverAsyncStop();
+      Serial.println("stopped");
+    } else {
+      Serial.println("Error on discoverAsync f.e. not working after a \"connect\"");
+    }
+  }
+
+  if (toPlay.length > 0 && discoveredDevice == DEVICE1_NAME) {
+    play(toPlay);
+  } else {
+    Serial.println("No song received, skipping playback.");
+  }
 }
 
 void loop() {
