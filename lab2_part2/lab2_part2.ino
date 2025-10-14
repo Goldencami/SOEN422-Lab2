@@ -9,9 +9,6 @@
 #include <BLE2902.h>
 #define BUZZER_PIN 21
 
-unsigned long timerDelay = 5000;
-unsigned long lastTimeDelay = millis();
-
 const char *ssid = "BELL892";
 const char *password = "1E7C373CF727";
 // const char *ssid = "iPhoneCamila"; // my hotspot
@@ -19,6 +16,9 @@ const char *password = "1E7C373CF727";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
+
+unsigned long timerDelay = 10000;
+unsigned long lastTimeDelay = millis();
 
 BLEServer *pServer = NULL;
 BLECharacteristic *pTxCharacteristic;
@@ -35,13 +35,6 @@ struct Song {
   int melody[50];
   int length = 0;
 };
-
-Song currentSong;
-int currentNote = 0;
-unsigned long noteStartTime = 0;
-int noteDuration = 0;
-bool notePlaying = false;
-bool isPlaying = false; // bool variable to know a song is playing and not interrupt it
 
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer *pServer) {
@@ -72,85 +65,63 @@ class MyCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-void wifiConnection() {
-  if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("WiFi disconnected, reconnecting...");
-    WiFi.disconnect();
-    WiFi.reconnect();
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) { // wait max 10s
-      delay(500);
-      Serial.print(".");
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nReconnected to WiFi!");
-    } else {
-      Serial.println("\nFailed to reconnect to WiFi.");
-    }
-  }
-}
+Song toPlay;
+bool isPlaying = false;
 
-
-void setSong(Song object) {
-  currentSong = object;
-  currentNote = 0;
-  noteStartTime = millis();
-  noteDuration = 0;
-  notePlaying = false;
+void play(Song object) {
+  int notes = object.length / 2;
+  int wholenote = (60000 * 4) / object.tempo;
+  int divider = 0, noteDuration = 0;
   isPlaying = true;
-}
 
-void playSong() {
-  if (!isPlaying || currentNote >= currentSong.length) return;
-
-  unsigned long timeNow = millis();
-
-  if (!notePlaying) {
-    // Calculate duration of current note
-    int wholenote = (60000 * 4) / currentSong.tempo;
-    int divider = currentSong.melody[currentNote + 1];
+  // iterate over the notes of the melody.
+  // Remember, the array is twice the number of notes (notes + durations)
+  for (int thisNote = 0; thisNote < notes * 2; thisNote = thisNote + 2) {
+    // calculates the duration of each note
+    divider = object.melody[thisNote + 1];
     if (divider > 0) {
-      noteDuration = wholenote / divider;
-    } else { 
-      noteDuration = (wholenote / abs(divider)) * 1.5; // dotted notes
+      // regular note, just proceed
+      noteDuration = (wholenote) / divider;
+    } else if (divider < 0) {
+      // dotted notes are represented with negative durations!!
+      noteDuration = (wholenote) / abs(divider);
+      noteDuration *= 1.5; // increases the duration in half for dotted notes
     }
 
-    // Play the note for 90% of the duration
-    tone(BUZZER_PIN, currentSong.melody[currentNote], noteDuration * 0.9);
-    noteStartTime = timeNow;
-    notePlaying = true;
-  }
+    // we only play the note for 90% of the duration, leaving 10% as a pause
+    tone(BUZZER_PIN, object.melody[thisNote], noteDuration * 0.9);
 
-  // Check if the note duration has passed
-  if (notePlaying && timeNow - noteStartTime >= noteDuration) {
+    // Wait for the specief duration before playing the next note.
+    delay(noteDuration);
+
+    // stop the waveform generation before the next note.
     noTone(BUZZER_PIN);
-    currentNote += 2; // move to next note
-    notePlaying = false;
   }
 
-  // If finished all notes
-  if (currentNote >= currentSong.length) {
-    isPlaying = false;
-  }
+  isPlaying = false;
 }
 
 Song httpGET(String endpoint) {
   Song song;
   if (WiFi.status() != WL_CONNECTED) return song; // don't continue if there's no wifi
+  WiFiClientSecure client; // create new client here
+  client.setInsecure();
 
   HTTPClient http;
-  http.begin(BASE_URL + endpoint, "");
+  http.begin(client, BASE_URL + endpoint);
+  delay(50);
 
   int httpResponseCode = http.GET();
   String payload = "";
 
   if (httpResponseCode > 0) {
     Serial.println("HTTP GET Response: " + String(httpResponseCode));
-    payload = http.getString(); // fetch the query
+    String payload = http.getString(); // fetch the query
     Serial.println(payload);
   }
   else {
     Serial.println("HTTP GET Error: " + String(httpResponseCode));
+    http.end(); // Free resources
     return song;
   }
 
@@ -199,10 +170,8 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("Connected to WiFi!");
-
-  Song toPlay = httpGET("/song");
-  setSong(toPlay);
+  Serial.println("\nConnected to WiFi!");
+  // toPlay = httpGET("/song");
 
   // Create the BLE Device
   BLEDevice::init("TTGO Service");
@@ -233,22 +202,11 @@ void setup() {
 }
 
 void loop() {
-  wifiConnection();
-
-  unsigned long timeNow = millis();
-  if(!isPlaying && (timeNow - lastTimeDelay > timerDelay)) {
-    if (WiFi.status() == WL_CONNECTED) {
-      Song toPlay = httpGET("/song");
-      if (toPlay.length > 0) {  // only set song if HTTP GET succeeded
-        setSong(toPlay);
-        lastTimeDelay = timeNow;
-      } else {
-        Serial.println("Failed to fetch song, will retry later...");
-      }
-    } else {
-      Serial.println("Wi-Fi not connected, skipping song fetch...");
+  if (millis() - lastTimeDelay > timerDelay) {
+    if(!isPlaying) {
+      toPlay = httpGET("/song");
+      delay(200); // give the Wi-Fi/TLS stack a moment
+      play(toPlay);
     }
   }
-
-  playSong();
 }
