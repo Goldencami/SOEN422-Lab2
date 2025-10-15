@@ -1,7 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
-#include <BluetoothSerial.h>
 #include <BLEDevice.h>
 #include <BLEServer.h>
 #include <BLEUtils.h>
@@ -42,24 +41,36 @@ class MyServerCallbacks : public BLEServerCallbacks {
 };
 
 class MyCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic *pCharacteristic) {
-    String rxValue = pCharacteristic->getValue();
+  private:
+    String rxValue;
 
-    if (rxValue.length() > 0) {
-      Serial.println("*********");
-      Serial.print("Received Value: ");
-      for (int i = 0; i < rxValue.length(); i++) {
-        Serial.print(rxValue[i]);
+  public:
+    void onWrite(BLECharacteristic *pCharacteristic) {
+      rxValue = pCharacteristic->getValue();
+
+      if (rxValue.length() > 0) {
+        Serial.println("*********");
+        Serial.print("Received Value: ");
+        for (int i = 0; i < rxValue.length(); i++) {
+          Serial.print(rxValue[i]);
+        }
+
+        Serial.println();
+        Serial.println("*********");
       }
-
-      Serial.println();
-      Serial.println("*********");
     }
-  }
+
+    String getValue() {
+      return rxValue;
+    }
+
+    void clearValue() {
+      rxValue = "";
+    }
 };
 
-Song toPlay;
 bool isPlaying = false;
+MyCallbacks myCallbacks;
 
 void play(Song object) {
   int notes = object.length / 2;
@@ -126,6 +137,18 @@ Song httpGET(String payload) {
   return song;
 }
 
+void getCommand(String rxValue) { // return string
+  if(rxValue == "!B813") { // -> button
+    Serial.println("Next song");
+  }
+  else if(rxValue == "!B714") { // <- button
+    Serial.println("Previous song");
+  }
+  else if(rxValue == "!B219") { // 2 button
+    Serial.println("Play/Pause song");
+  }
+}
+
 void setup() {
   Serial.begin(115200);
 
@@ -138,6 +161,7 @@ void setup() {
   }
   Serial.println("\nConnected to WiFi!");
 
+  // setupBluetooth();
   // Create the BLE Device
   BLEDevice::init("TTGO Service");
 
@@ -156,7 +180,7 @@ void setup() {
 
   BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_WRITE);
 
-  pRxCharacteristic->setCallbacks(new MyCallbacks());
+  pRxCharacteristic->setCallbacks(&myCallbacks);
 
   // Start the service
   pService->start();
@@ -168,23 +192,61 @@ void setup() {
 
 void loop() {
   if(WiFi.status() == WL_CONNECTED) {
-    if(!isPlaying) {
-      HTTPClient http;
-      http.begin("https://iotjukebox.onrender.com/song");
-      int httpResponseCode = http.GET();
+    HTTPClient http;
+    http.begin("https://iotjukebox.onrender.com/song");
+    int httpResponseCode = http.GET();
 
-      if(httpResponseCode > 0) {
-        Serial.println("HTTP GET Response: " + String(httpResponseCode));
-        String payload = http.getString();
-        Serial.println(payload);
-        Song toPlay = httpGET(payload);
-        play(toPlay);
-      }
-      else {
-        Serial.println("HTTP GET Error: " + String(httpResponseCode));
-      }
-
-      http.end(); // Free resources
+    if(httpResponseCode > 0) {
+      Serial.println("HTTP GET Response: " + String(httpResponseCode));
+      String payload = http.getString();
+      Serial.println(payload);
+      Song toPlay = httpGET(payload);
+      play(toPlay);
     }
+    else {
+      Serial.println("HTTP GET Error: " + String(httpResponseCode));
+    }
+    http.end(); // Free resources
   }
+
+  // // disconnecting
+  // if (!deviceConnected && oldDeviceConnected) {
+  //   delay(500);                   // give the bluetooth stack the chance to get things ready
+  //   pServer->startAdvertising();  // restart advertising
+  //   Serial.println("Started advertising again...");
+  //   oldDeviceConnected = false;
+  // }
+  // // connecting
+  // if (deviceConnected && !oldDeviceConnected) {
+  //   // do stuff here on connecting
+  //   oldDeviceConnected = true;
+  // }
+
+  // String rxValue = myCallbacks.getValue();
+  // if (rxValue.length() > 0) {
+  //   Serial.println("Value: " + rxValue);
+  //   getCommand(rxValue); 
+  //   myCallbacks.clearValue(); 
+  // }
+
+  // if(WiFi.status() == WL_CONNECTED) {
+  //   if(!isPlaying) {
+  //     HTTPClient http;
+  //     http.begin("https://iotjukebox.onrender.com/song");
+  //     int httpResponseCode = http.GET();
+
+  //     if(httpResponseCode > 0) {
+  //       Serial.println("HTTP GET Response: " + String(httpResponseCode));
+  //       String payload = http.getString();
+  //       Serial.println(payload);
+  //       Song toPlay = httpGET(payload);
+  //       play(toPlay);
+  //     }
+  //     else {
+  //       Serial.println("HTTP GET Error: " + String(httpResponseCode));
+  //     }
+
+  //     http.end(); // Free resources
+  //   }
+  // }
 }
