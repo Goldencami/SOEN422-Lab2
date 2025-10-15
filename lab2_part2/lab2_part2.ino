@@ -1,5 +1,4 @@
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <BluetoothSerial.h>
@@ -13,12 +12,6 @@ const char *ssid = "BELL892";
 const char *password = "1E7C373CF727";
 // const char *ssid = "iPhoneCamila"; // my hotspot
 // const char *password = "Nicolas19";
-
-String BASE_URL = "https://iotjukebox.onrender.com";
-String STUDENT_ID = "40239038";
-
-unsigned long timerDelay = 10000;
-unsigned long lastTimeDelay = millis();
 
 BLEServer *pServer = NULL;
 BLECharacteristic *pTxCharacteristic;
@@ -101,33 +94,10 @@ void play(Song object) {
   isPlaying = false;
 }
 
-Song httpGET(String endpoint) {
+Song httpGET(String payload) {
   Song song;
-  if (WiFi.status() != WL_CONNECTED) return song; // don't continue if there's no wifi
-  WiFiClientSecure client; // create new client here
-  client.setInsecure();
-
-  HTTPClient http;
-  http.begin(client, BASE_URL + endpoint);
-  delay(50);
-
-  int httpResponseCode = http.GET();
-  String payload = "";
-
-  if (httpResponseCode > 0) {
-    Serial.println("HTTP GET Response: " + String(httpResponseCode));
-    String payload = http.getString(); // fetch the query
-    Serial.println(payload);
-  }
-  else {
-    Serial.println("HTTP GET Error: " + String(httpResponseCode));
-    http.end(); // Free resources
-    return song;
-  }
-
-  http.end(); // Free resources
-
   DynamicJsonDocument doc(1024);
+
   // Read the JSON document received from the API
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
@@ -156,10 +126,6 @@ Song httpGET(String endpoint) {
   return song;
 }
 
-Song getSong(String song_name) {
-  return httpGET("/song?name=" + song_name);
-}
-
 void setup() {
   Serial.begin(115200);
 
@@ -171,7 +137,6 @@ void setup() {
     Serial.print(".");
   }
   Serial.println("\nConnected to WiFi!");
-  // toPlay = httpGET("/song");
 
   // Create the BLE Device
   BLEDevice::init("TTGO Service");
@@ -202,11 +167,24 @@ void setup() {
 }
 
 void loop() {
-  if (millis() - lastTimeDelay > timerDelay) {
+  if(WiFi.status() == WL_CONNECTED) {
     if(!isPlaying) {
-      toPlay = httpGET("/song");
-      delay(200); // give the Wi-Fi/TLS stack a moment
-      play(toPlay);
+      HTTPClient http;
+      http.begin("https://iotjukebox.onrender.com/song");
+      int httpResponseCode = http.GET();
+
+      if(httpResponseCode > 0) {
+        Serial.println("HTTP GET Response: " + String(httpResponseCode));
+        String payload = http.getString();
+        Serial.println(payload);
+        Song toPlay = httpGET(payload);
+        play(toPlay);
+      }
+      else {
+        Serial.println("HTTP GET Error: " + String(httpResponseCode));
+      }
+
+      http.end() // Free resources
     }
   }
 }
