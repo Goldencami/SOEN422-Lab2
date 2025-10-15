@@ -184,7 +184,7 @@ void loop() {
         Serial.println("HTTP GET Error: " + String(httpResponseCode));
       }
 
-      http.end() // Free resources
+      http.end(); // Free resources
     }
   }
 }
