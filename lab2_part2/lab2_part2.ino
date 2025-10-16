@@ -5,15 +5,21 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include "esp_bt.h"
+#include "esp_coexist.h"
 #define BUZZER_PIN 21
 
+// ====== WiFi ======
 const char *ssid = "BELL892";
 const char *password = "1E7C373CF727";
 // const char *ssid = "iPhoneCamila"; // my hotspot
 // const char *password = "Nicolas19";
 
+
+// ====== BLE UART ======
 BLEServer *pServer = NULL;
 BLECharacteristic *pTxCharacteristic;
+BLEAdvertising *bleAdvertising;
 bool deviceConnected = false;
 bool oldDeviceConnected = false;
 uint8_t txValue = 0;
@@ -21,6 +27,13 @@ uint8_t txValue = 0;
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
+// ====== Radio Mode ======
+enum RadioMode { MODE_BLE, MODE_HTTP };
+RadioMode currentMode = MODE_BLE;
+unsigned long lastSwitch = 0;
+const unsigned long switchInterval = 10000; // 10 seconds per mode
+
+// ====== Song Struct ======
 struct Song {
   String name = "undefined";
   int tempo;
@@ -70,8 +83,11 @@ class MyCallbacks : public BLECharacteristicCallbacks {
 };
 
 bool isPlaying = false;
+Song pendingSong;
+bool songReady = false;
 MyCallbacks myCallbacks;
 
+// ====== Plays song ======
 void play(Song object) {
   int notes = object.length / 2;
   int wholenote = (60000 * 4) / object.tempo;
@@ -105,6 +121,7 @@ void play(Song object) {
   isPlaying = false;
 }
 
+// ====== HTTP Request to API ======
 Song httpGET(String payload) {
   Song song;
   DynamicJsonDocument doc(1024);
@@ -149,25 +166,38 @@ void getCommand(String rxValue) { // return string
   }
 }
 
-void setup() {
-  Serial.begin(115200);
-
-  // Connect WiFi first
+// ====== Wi-Fi connect ======
+void connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return;
+  
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   WiFi.begin(ssid, password);
-  Serial.println("Connecting");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
+  Serial.printf("[WiFi] Connecting to %s\n", ssid);
+
+  unsigned long start = millis();
+
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
+    delay(250);
     Serial.print(".");
   }
-  Serial.println("\nConnected to WiFi!");
 
-  // setupBluetooth();
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("\n[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
+  }
+  else {
+    Serial.println("\n[WiFi] Failed, retry later");
+  }
+}
+
+// ====== BLE Setup ======
+void setupBLE() {
   // Create the BLE Device
   BLEDevice::init("TTGO Service");
 
   // Create the BLE Server
   pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  // pServer->setCallbacks(new MyServerCallbacks());
 
   // Create the BLE Service
   BLEService *pService = pServer->createService(SERVICE_UUID);
@@ -175,8 +205,8 @@ void setup() {
   // Create a BLE Characteristic
   pTxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_TX, BLECharacteristic::PROPERTY_NOTIFY);
 
-  // Descriptor 2902 is not required when using NimBLE as it is automatically added based on the characteristic properties
-  pTxCharacteristic->addDescriptor(new BLE2902());
+  // // Descriptor 2902 is not required when using NimBLE as it is automatically added based on the characteristic properties
+  // pTxCharacteristic->addDescriptor(new BLE2902());
 
   BLECharacteristic *pRxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_WRITE);
 
@@ -186,67 +216,102 @@ void setup() {
   pService->start();
 
   // Start advertising
-  pServer->getAdvertising()->start();
+  bleAdvertising = pServer->getAdvertising();
+  bleAdvertising->addServiceUUID(SERVICE_UUID);
+  bleAdvertising->start();
   Serial.println("Waiting a client connection to notify...");
 }
 
-void loop() {
-  if(WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    http.begin("https://iotjukebox.onrender.com/song");
-    int httpResponseCode = http.GET();
+// completely stops BLE
+void stopBLE() {
+  if (pServer) {
+    bleAdvertising->stop(); // stop advertising
+    BLEDevice::deinit(true); // fully release BLE stack & memory
+    pServer = nullptr;
+    bleAdvertising = nullptr;
+    pTxCharacteristic = nullptr;
+    Serial.println("[BLE] Fully stopped for HTTP mode");
+  }
+}
 
-    if(httpResponseCode > 0) {
-      Serial.println("HTTP GET Response: " + String(httpResponseCode));
-      String payload = http.getString();
-      Serial.println(payload);
-      Song toPlay = httpGET(payload);
-      play(toPlay);
+// starts BLE
+void startBLE() {
+  setupBLE();  // reinitialize BLE stack and start advertising
+  Serial.println("[BLE] Restarted BLE mode");
+}
+
+
+void setup() {
+  Serial.begin(115200);
+
+  // Connect BLE first
+  setupBLE();
+  connectWiFi();
+
+  esp_bt_controller_mem_release(ESP_BT_MODE_CLASSIC_BT); // free Classic BT memory
+  esp_coex_preference_set(ESP_COEX_PREFER_WIFI); // Wi-Fi gets priority 
+}
+
+void loop() {
+  unsigned long timeNow = millis();
+
+  // Issue: http GET requests and BLE share the same radio
+  // leads to interferance, http is not able to connect with API and returns error -1
+  // Solution: switch between http and BLE in who is on the radio while the other in idle
+  if (timeNow - lastSwitch >= switchInterval) {
+    lastSwitch = timeNow;
+
+    if (currentMode == MODE_BLE) {
+      Serial.println("[MODE] Switching to HTTP mode");
+      currentMode = MODE_HTTP;
+
+      // Pause BLE advertising to free the radio completely
+      stopBLE();
+      Serial.println("[BLE] Advertising stopped for HTTP mode");
+
+    } else {
+      Serial.println("[MODE] Switching to BLE mode");
+      currentMode = MODE_BLE;
+
+      // Resume BLE advertising
+      startBLE();
+      Serial.println("[BLE] Advertising resumed for BLE mode");
     }
-    else {
-      Serial.println("HTTP GET Error: " + String(httpResponseCode));
-    }
-    http.end(); // Free resources
   }
 
-  // // disconnecting
-  // if (!deviceConnected && oldDeviceConnected) {
-  //   delay(500);                   // give the bluetooth stack the chance to get things ready
-  //   pServer->startAdvertising();  // restart advertising
-  //   Serial.println("Started advertising again...");
-  //   oldDeviceConnected = false;
-  // }
-  // // connecting
-  // if (deviceConnected && !oldDeviceConnected) {
-  //   // do stuff here on connecting
-  //   oldDeviceConnected = true;
-  // }
+  // specific behaviour depending on the mode
+  if (currentMode == MODE_BLE) {
+    // ensure notifications reach
+    // Play any song received during HTTP mode
+    if(songReady) {
+        play(pendingSong);
+        songReady = false;
+    }
+    delay(50); // keep loop light
+  }
+  else if(currentMode == MODE_HTTP) {
+    if (WiFi.status() != WL_CONNECTED) {
+      connectWiFi();
+    }
+    else if(WiFi.status() == WL_CONNECTED) {
+      HTTPClient http;
+      http.begin("https://iotjukebox.onrender.com/song");
+      int httpResponseCode = http.GET();
 
-  // String rxValue = myCallbacks.getValue();
-  // if (rxValue.length() > 0) {
-  //   Serial.println("Value: " + rxValue);
-  //   getCommand(rxValue); 
-  //   myCallbacks.clearValue(); 
-  // }
+      if(httpResponseCode > 0) {
+        Serial.println("HTTP GET Response: " + String(httpResponseCode));
+        String payload = http.getString();
+        Serial.println(payload);
 
-  // if(WiFi.status() == WL_CONNECTED) {
-  //   if(!isPlaying) {
-  //     HTTPClient http;
-  //     http.begin("https://iotjukebox.onrender.com/song");
-  //     int httpResponseCode = http.GET();
+        pendingSong = httpGET(payload);
+        songReady = true;
+      }
+      else {
+        Serial.println("HTTP GET Error: " + String(httpResponseCode));
+      }
+      http.end(); // Free resources
+    }
 
-  //     if(httpResponseCode > 0) {
-  //       Serial.println("HTTP GET Response: " + String(httpResponseCode));
-  //       String payload = http.getString();
-  //       Serial.println(payload);
-  //       Song toPlay = httpGET(payload);
-  //       play(toPlay);
-  //     }
-  //     else {
-  //       Serial.println("HTTP GET Error: " + String(httpResponseCode));
-  //     }
-
-  //     http.end(); // Free resources
-  //   }
-  // }
+    delay(500); // short delay to avoid continuous HTTP
+  }
 }
