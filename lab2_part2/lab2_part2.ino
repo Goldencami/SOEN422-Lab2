@@ -134,13 +134,17 @@ void startBLE() {
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setMinInterval(3200);
   pAdvertising->setMaxInterval(4000);
-  pAdvertising->start();
-  Serial.println("BLE resumed and advertising...");
+  // pAdvertising->start();
+
+  if(pAdvertising) {
+    pAdvertising->start();
+    Serial.println("BLE resumed and advertising...");
+  }
 }
 
 void stopBLE() {
   if (pAdvertising) pAdvertising->stop();
-  BLEDevice::deinit(true);
+  // BLEDevice::deinit(true);
   Serial.println("BLE stopped");
 }
 
@@ -306,6 +310,14 @@ void fetchSongsBatch(void* param) {
       // Stop BLE completely, stops advertising and deinitializes BLE
       Serial.println("Stopping BLE for Wi-Fi batch fetch...");
       stopBLE();
+
+      if (!connectWiFi()) {
+        Serial.println("Failed to connect Wi-Fi, skipping batch fetch.");
+        startBLE();
+        fetchNextSongFlag = false;
+        vTaskDelay(100/portTICK_PERIOD_MS);
+        continue;
+      }
 
       Serial.println("Fetching new batch...");
       for (int i=0; i < BATCH_SIZE; i++) {
