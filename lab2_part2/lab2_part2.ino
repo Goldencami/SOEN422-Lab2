@@ -8,7 +8,7 @@
 #include <BLE2902.h>
 #define BUZZER_PIN 21
 #define PLAYLIST_MAX 20
-#define BATCH_SIZE 5
+#define BATCH_SIZE 1
 
 // Wifi info
 const char* ssid = "BELL892";
@@ -64,7 +64,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* pCharacteristic) {
     String val = pCharacteristic->getValue().c_str();
 
-    if (val.length() == 0) return;
+    if(val.length() == 0) return;
 
     char cmd = val[0];
     switch(cmd) {
@@ -81,7 +81,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         }
         break;
       case 'B': // Previous song
-        if (queueSize > 0 && currentSongIndex > 0) {
+        if(queueSize > 0 && currentSongIndex > 0) {
           startSong(currentSongIndex - 1);
           break;
         }
@@ -91,16 +91,15 @@ class MyCallbacks : public BLECharacteristicCallbacks {
 
 // ====== Wifi Setup ======
 bool connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) {
+  if(WiFi.status() == WL_CONNECTED) {
     return true;
   }
 
   Serial.println("Connecting to Wifi...");
-  WiFi.disconnect(true); // fresh connection, avoid connecting to a previous network
   WiFi.begin(ssid, password);
 
   int retries = 0;
-  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+  while(WiFi.status() != WL_CONNECTED && retries < 20) {
     delay(250); 
     Serial.print(".");
     retries++;
@@ -108,12 +107,12 @@ bool connectWiFi() {
   Serial.println();
 
   // In case wifi ever gets disconnected
-  if (WiFi.status() != WL_CONNECTED) {
+  if(WiFi.status() != WL_CONNECTED) {
     return false;
   }
 
   Serial.println("Wifi connected");
-  delay(200); // stabilization
+  delay(500); // stabilization
   return true;
 }
 
@@ -132,28 +131,33 @@ void startBLE() {
 
   pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setMinInterval(3200);
-  pAdvertising->setMaxInterval(4000);
-  // pAdvertising->start();
-
-  if(pAdvertising) {
-    pAdvertising->start();
-    Serial.println("BLE resumed and advertising...");
-  }
+  pAdvertising->setMinInterval(0x20);
+  pAdvertising->setMaxInterval(0x40);
+  pAdvertising->start();
+  Serial.println("BLE resumed and advertising...");
 }
 
 void stopBLE() {
-  if (pAdvertising) pAdvertising->stop();
-  // BLEDevice::deinit(true);
-  Serial.println("BLE stopped");
+  if(deviceConnected) {
+    pAdvertising->stop();
+    Serial.println("BLE advertising stopped");
+    vTaskDelay(200 / portTICK_PERIOD_MS); // let radio settle
+  }
+}
+
+void resumeBLE() {
+  if (pAdvertising) {
+    pAdvertising->start();
+    Serial.println("BLE advertising resumed");
+  }
 }
 
 // ====== Songs Functions ======
 void play() {
-  if (!currentSong || !isPlaying) return;
+  if(!currentSong || !isPlaying) return;
   unsigned long now = millis();
 
-  if (now >= nextNoteTime) {
+  if(now >= nextNoteTime) {
     int notes = currentSong->length / 2;
     if (notes <= 0) {
       currentNoteIndex = 0;
@@ -162,44 +166,38 @@ void play() {
       return;
     }
 
-    if (currentNoteIndex >= notes * 2) {
+    if(currentNoteIndex >= notes * 2) {
       currentNoteIndex = 0;
+      currentSongIndex++;
 
-      if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-        currentSongIndex++;
-        if (currentSongIndex >= queueSize) {
-          fetchNextSongFlag = true; // trigger batch fetch
-        } 
-        else {
-          int realIndex = (queueHead + currentSongIndex) % PLAYLIST_MAX;
-          currentSong = &playList[realIndex];
-          currentNoteIndex = 0;
-          nextNoteTime = millis();
-          Serial.println("Starting next queued song: " + currentSong->name);
-        }
-        xSemaphoreGive(playlistMutex);
+      if(currentSongIndex >= queueSize) {
+        Serial.println("Reached end of playlist, waiting for new batch");
+        currentSong = nullptr;  // stop playback
+        fetchNextSongFlag = true;
+        return;
       } 
       else {
-        fetchNextSongFlag = true;
+        int realIndex = currentSongIndex;
+        currentSong = &playList[realIndex];
+        nextNoteTime = millis();
       }
-      return;
     }
 
     int pitch = currentSong->melody[currentNoteIndex];
     int divider = currentSong->melody[currentNoteIndex+1];
     int wholenote = (60000*4)/currentSong->tempo;
 
-    if (divider > 0) {
+    if(divider > 0) {
       noteDuration = wholenote/divider;
     }
-    else if (divider < 0) {
+    else if(divider < 0) {
       noteDuration = wholenote/abs(divider)*1.5;
     }
     else {
       noteDuration = wholenote/4;
     }
 
-    if (pitch > 0) {
+    if(pitch > 0) {
       tone(BUZZER_PIN, constrain(pitch,100,5000), noteDuration*0.9);
     }
     else {
@@ -257,8 +255,7 @@ Song fetchSong() {
     newSong.melody[i] = melodyArr[i].as<int>();
   }
 
-  WiFi.disconnect(true); // turn off Wifi after fetch
-  Serial.println("Wifi stopped");
+  Serial.println("Fetched song " + newSong.name);
   return newSong;
 }
 
@@ -285,17 +282,8 @@ void startSong(int index) {
 void addSongToPlaylist(Song s) {
   if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
     if (queueSize < PLAYLIST_MAX) {
-      int tail = (queueHead + queueSize) % PLAYLIST_MAX;
-      playList[tail] = s;
+      playList[queueSize] = s;
       queueSize++;
-    } 
-    else {
-      // Overwrite oldest song (circular)
-      playList[queueHead] = s;
-      queueHead = (queueHead + 1) % PLAYLIST_MAX;
-      if (currentSongIndex >= queueSize) {
-        currentSongIndex = queueSize - 1;
-      }
     }
     xSemaphoreGive(playlistMutex);
   }
@@ -309,30 +297,28 @@ void fetchSongsBatch(void* param) {
     if(fetchNextSongFlag) {
       // Stop BLE completely, stops advertising and deinitializes BLE
       Serial.println("Stopping BLE for Wi-Fi batch fetch...");
-      stopBLE();
-
-      if (!connectWiFi()) {
-        Serial.println("Failed to connect Wi-Fi, skipping batch fetch.");
-        startBLE();
-        fetchNextSongFlag = false;
-        vTaskDelay(100/portTICK_PERIOD_MS);
-        continue;
-      }
+      resumeBLE();
 
       Serial.println("Fetching new batch...");
-      for (int i=0; i < BATCH_SIZE; i++) {
-        Song s = fetchSong();
+      int retries = 0;
+      Song s;
+      while(s.length == 0) { //retries < 3 && 
+        s = fetchSong();
+        if(s.length == 0) {
+          vTaskDelay(500 / portTICK_PERIOD_MS); // wait before retry
+        }
+        ++retries;
+      }
+      if(s.length > 0) {
         addSongToPlaylist(s);
       }
 
-      Serial.println("Restarting BLE...");
-      startBLE();
-
       // Reset playback to the first song in the new batch if needed
-      if (currentSongIndex >= queueSize) {
-        currentSongIndex = queueSize - PLAYLIST_MAX;
+      if(currentSongIndex >= queueSize) {
+        currentSongIndex = max(0, queueSize - BATCH_SIZE);
       }
       startSong(currentSongIndex);
+      resumeBLE();
       fetchNextSongFlag = false;
     }
     vTaskDelay(50/portTICK_PERIOD_MS);
@@ -347,7 +333,7 @@ void setup() {
   if (!playlistMutex) Serial.println("Failed to create mutex!");
 
   // fetch initial batch OUTSIDE mutex
-  for (int i=0; i < BATCH_SIZE; i++) {
+  for (int i=0; i < 5; i++) {
     addSongToPlaylist(fetchSong());
   }
 
