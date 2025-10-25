@@ -8,9 +8,10 @@
 #include <BLE2902.h>
 #include <vector>
 #define BUZZER_PIN 21
+#define PLAYLIST_MAX 20
 #define BATCH_SIZE 5
 
-// Wifi credentials
+// Wifi info
 const char* ssid = "BELL892";
 const char* password = "1E7C373CF727";
 
@@ -22,7 +23,6 @@ const char* password = "1E7C373CF727";
 BLEAdvertising* pAdvertising = nullptr;
 BLECharacteristic* pTxCharacteristic;
 bool deviceConnected = false;
-SemaphoreHandle_t playlistMutex;
 
 // ====== Functions signature ======
 void startSong(int index);
@@ -37,14 +37,18 @@ struct Song {
 };
 
 // ====== Playlist Variables ======
-std::vector<Song> PlayList;
+Song playList[PLAYLIST_MAX];
+int queueHead = 0;
+int queueSize = 0;
+int currentSongIndex = 0;
+
 Song* currentSong = nullptr;
-int currentSongIndex = 0;  // index for playlist
 int currentNoteIndex = 0;
 unsigned long nextNoteTime = 0;
 int noteDuration = 0;
 bool isPlaying = true;
 bool fetchNextSongFlag = false; // to avoid fetching new batch more than once
+SemaphoreHandle_t playlistMutex;
 
 class MyServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* pServer) { 
@@ -70,7 +74,7 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         Serial.printf("Play toggle -> %d\n", isPlaying); 
         break;
       case 'N': // Next song
-        if(currentSongIndex < PlayList.size() - 1) {
+        if(currentSongIndex < queueSize - 1) {
           startSong(currentSongIndex + 1);
         } 
         else {
@@ -78,13 +82,14 @@ class MyCallbacks : public BLECharacteristicCallbacks {
         }
         break;
       case 'B': // Previous song
-        if (PlayList.size() > 0 && currentSongIndex > 0) {
+        if (queueSize > 0 && currentSongIndex > 0) {
           startSong(currentSongIndex - 1);
           break;
         }
     }
   }
 };
+
 // ====== Wifi Setup ======
 bool connectWiFi() {
   if (WiFi.status() == WL_CONNECTED) {
@@ -110,7 +115,6 @@ bool connectWiFi() {
 
   Serial.println("Wifi connected");
   delay(200); // stabilization
-
   return true;
 }
 
@@ -143,61 +147,70 @@ void stopBLE() {
 
 // ====== Songs Functions ======
 void play() {
-  if (!isPlaying) return;
+  if (!currentSong || !isPlaying) return;
+  unsigned long now = millis();
 
-  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-    if (!currentSong) {
-      xSemaphoreGive(playlistMutex);
+  if (now >= nextNoteTime) {
+    int notes = currentSong->length / 2;
+    if (notes <= 0) {
+      currentNoteIndex = 0;
+      currentSongIndex++;
+      if (currentSongIndex >= queueSize) fetchNextSongFlag = true; // trigger batch fetch
       return;
     }
 
-    unsigned long now = millis();
-    if (now >= nextNoteTime) {
-      if (currentNoteIndex >= currentSong->length) {
-        currentNoteIndex = 0;
-        currentSongIndex++;
+    if (currentNoteIndex >= notes * 2) {
+      currentNoteIndex = 0;
 
-        if (currentSongIndex >= PlayList.size()) {
-          fetchNextSongFlag = true;
+      if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+        currentSongIndex++;
+        if (currentSongIndex >= queueSize) {
+          fetchNextSongFlag = true; // trigger batch fetch
         } 
         else {
-          startSong(currentSongIndex);
+          int realIndex = (queueHead + currentSongIndex) % PLAYLIST_MAX;
+          currentSong = &playList[realIndex];
+          currentNoteIndex = 0;
+          nextNoteTime = millis();
+          Serial.println("Starting next queued song: " + currentSong->name);
         }
-
         xSemaphoreGive(playlistMutex);
-        return;
-      }
-
-      int pitch = currentSong->melody[currentNoteIndex];
-      int divider = currentSong->melody[currentNoteIndex + 1];
-      int wholenote = (60000 * 4) / currentSong->tempo;
-
-      if (divider > 0) {
-        noteDuration = wholenote / divider;
-      }
-      else if (divider < 0) {
-        noteDuration = (wholenote / abs(divider)) * 1.5;
-      }
+      } 
       else {
-        noteDuration = wholenote / 4;
+        fetchNextSongFlag = true;
       }
-
-      if (pitch > 0) {
-        tone(BUZZER_PIN, constrain(pitch, 100, 5000), noteDuration * 0.9);
-      }
-      else {
-        noTone(BUZZER_PIN);
-      }
-
-      nextNoteTime = now + noteDuration;
-      currentNoteIndex += 2;
+      return;
     }
-    xSemaphoreGive(playlistMutex);
+
+    int pitch = currentSong->melody[currentNoteIndex];
+    int divider = currentSong->melody[currentNoteIndex+1];
+    int wholenote = (60000*4)/currentSong->tempo;
+
+    if (divider > 0) {
+      noteDuration = wholenote/divider;
+    }
+    else if (divider < 0) {
+      noteDuration = wholenote/abs(divider)*1.5;
+    }
+    else {
+      noteDuration = wholenote/4;
+    }
+
+    if (pitch > 0) {
+      tone(BUZZER_PIN, constrain(pitch,100,5000), noteDuration*0.9);
+    }
+    else {
+      noTone(BUZZER_PIN);
+    }
+
+    nextNoteTime = now + noteDuration;
+    currentNoteIndex += 2;
   }
 }
 
 Song fetchSong() {
   Song newSong;
+  if (!connectWiFi()) return newSong;
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -250,21 +263,17 @@ Song fetchSong() {
 // Reset playlist variables (currentNoteIndex, nextNoteTime, ...)
 void startSong(int index) {
   if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-    if (PlayList.empty()) {
-      Serial.println("No songs in playlist!");
-      xSemaphoreGive(playlistMutex);
-      return;
+    if (queueSize == 0) {
+      xSemaphoreGive(playlistMutex); return;
     }
-    // handle error
-    if (index < 0 || index >= PlayList.size()) index = 0;
 
+    index = index % queueSize;
     currentSongIndex = index;
-    currentSong = &PlayList[currentSongIndex]; // don't make a copy, get direct address 
+    int realIndex = (queueHead + currentSongIndex) % PLAYLIST_MAX;
+    currentSong = &playList[realIndex];
     currentNoteIndex = 0;
     nextNoteTime = millis();
-    isPlaying = true;
-
-    Serial.println("Now playing: " + currentSong->name + " (index " + String(currentSongIndex) + ")");
+    Serial.println("Now playing: " + currentSong->name + " (queueIndex=" + String(currentSongIndex) + ")");
     xSemaphoreGive(playlistMutex);
   }
 }
@@ -272,16 +281,19 @@ void startSong(int index) {
 // have a limit of playlist having 20 songs
 void addSongToPlaylist(Song s) {
   if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-    if (PlayList.size() >= 20) {
-      PlayList.clear(); // remove all songs
-      currentSong = nullptr;
-      currentSongIndex = 0;
-      currentNoteIndex = 0;
-      nextNoteTime = 0;
-      fetchNextSongFlag = true; // trigger fetch of new batch
+    if (queueSize < PLAYLIST_MAX) {
+      int tail = (queueHead + queueSize) % PLAYLIST_MAX;
+      playList[tail] = s;
+      queueSize++;
+    } 
+    else {
+      // Overwrite oldest song (circular)
+      playList[queueHead] = s;
+      queueHead = (queueHead + 1) % PLAYLIST_MAX;
+      if (currentSongIndex >= queueSize) {
+        currentSongIndex = queueSize - 1;
+      }
     }
-
-    PlayList.push_back(s);
     xSemaphoreGive(playlistMutex);
   }
 }
@@ -290,35 +302,27 @@ void addSongToPlaylist(Song s) {
 // This causes wifi's connection to server to be interrupted by BLE
 // SOLUTION: completely stop BLE when wifi needs to run, then restart it
 void fetchSongsBatch(void* param) {
-  // Stop BLE completely, stops advertising and deinitializes BLE
   for(;;) {
-    if(fetchNextSongFlag){
+    if(fetchNextSongFlag) {
+      // Stop BLE completely, stops advertising and deinitializes BLE
       Serial.println("Stopping BLE for Wi-Fi batch fetch...");
       stopBLE();
 
-      if(connectWiFi()) {  // connect once per batch
-        Serial.println("Fetching new batch...");
-        for(int i=0; i<BATCH_SIZE; i++) {
-          Song s = fetchSong();  // use the updated function
-          if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-            addSongToPlaylist(s);
-            Serial.println(String(s.name) + " added to playlist.");
-            xSemaphoreGive(playlistMutex);
-          }
-        }
-
-        WiFi.disconnect(true); // disconnect once after batch
-        Serial.println("Wifi stopped");
+      Serial.println("Fetching new batch...");
+      for (int i=0; i < BATCH_SIZE; i++) {
+        Song s = fetchSong();
+        addSongToPlaylist(s);
       }
 
       Serial.println("Restarting BLE...");
       startBLE();
-      // safely start the first song of the new batch
-      if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-        fetchNextSongFlag = false;
-        startSong(PlayList.size() - BATCH_SIZE);
-        xSemaphoreGive(playlistMutex);
+
+      // Reset playback to the first song in the new batch if needed
+      if (currentSongIndex >= queueSize) {
+        currentSongIndex = queueSize - PLAYLIST_MAX;
       }
+      startSong(currentSongIndex);
+      fetchNextSongFlag = false;
     }
     vTaskDelay(50/portTICK_PERIOD_MS);
   }
@@ -327,24 +331,16 @@ void fetchSongsBatch(void* param) {
 void setup() {
   Serial.begin(115200);
   pinMode(BUZZER_PIN, OUTPUT);
+
   playlistMutex = xSemaphoreCreateMutex();
-  if (!playlistMutex) {
-    Serial.println("Failed to create mutex!");
+  if (!playlistMutex) Serial.println("Failed to create mutex!");
+
+  // fetch initial batch OUTSIDE mutex
+  for (int i=0; i < BATCH_SIZE; i++) {
+    addSongToPlaylist(fetchSong());
   }
 
-  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
-    Serial.println("Fetching initial songs...");
-    for(int i=0; i < BATCH_SIZE; i++) {
-      Song s = fetchSong();
-      addSongToPlaylist(s);
-      Serial.println(String(s.name) + " added to playlist.");
-    }
-    xSemaphoreGive(playlistMutex);
-  }
-
-  if (!PlayList.empty()) {
-    startSong(0);
-  }
+  if (queueSize > 0) startSong(0);
 
   // Start BLE
   startBLE();
