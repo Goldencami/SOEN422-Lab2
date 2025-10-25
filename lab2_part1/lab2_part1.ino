@@ -34,7 +34,7 @@ struct Song {
   int length = 0;
 };
 
-Song currentSong;
+String song_name;
 bool isPlaying = false;
 
 void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
@@ -44,6 +44,9 @@ void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
     myDevice = pDevice->getName().c_str();
     deviceFound = true;
     Serial.println("Saved device: " + myDevice);
+    Serial.println("Stopping discoverAsync... ");
+    SerialBT.discoverAsyncStop();
+    delay(100); // small delay for Wi-Fi to settle
   }
 }
 
@@ -132,9 +135,8 @@ Song getSong(String song_name) {
   return httpGET("/song?name=" + song_name);
 }
 
-Song getPreferedSong(String student_id, String device) {
-  Song newSong;
-  if (WiFi.status() != WL_CONNECTED) return newSong;
+void getPreferedSong(String student_id, String device) {
+  if (WiFi.status() != WL_CONNECTED) return;
 
   HTTPClient http;
   http.begin(BASE_URL + "/preference?id=" + student_id + "&key=" + device);
@@ -146,7 +148,7 @@ Song getPreferedSong(String student_id, String device) {
   }
   else {
     Serial.println("HTTP GET Error: " + String(httpCode));
-    return newSong;
+    return;
   }
   http.end(); // Free resources
 
@@ -156,15 +158,15 @@ Song getPreferedSong(String student_id, String device) {
   if (error) {
     Serial.print("deserializeJson() failed: ");
     Serial.println(error.f_str());
-    return newSong;
+    return;
   }
   // Verify the fields are present
   if (!doc.containsKey("name")) {
     Serial.println("JSON missing required fields!");
-    return newSong;
+    return ;
   }
-  String song_name = doc["name"].as<String>(); // converts JSON string into a string C++ can accept
-  return httpGET("/song?name=" + song_name);
+  song_name = doc["name"].as<String>(); // converts JSON string into a string C++ can accept
+  // return httpGET("/song?name=" + song_name);
 }
 
 void postDevice(String student_id, String device, String song_name) {
@@ -197,18 +199,13 @@ void setupWifi() {
 }
 
 void asyncDiscovery() {
-  // reset values
-  myDevice = "";
-  deviceFound = false;
-
-  Serial.print("Starting asynchronous discovery... ");
-  if(SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
+  Serial.println("Starting asynchronous discovery... ");
+  if (SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
     Serial.println("Findings will be reported in \"btAdvertisedDeviceFound\"");
-    // delay(10000);
-    Serial.print("Stopping discoverAsync... ");
+    delay(2000);
     SerialBT.discoverAsyncStop();
-  } 
-  else {
+    Serial.println("Stopped discoverAsync.");
+  } else {
     Serial.println("Error on discoverAsync f.e. not working after a \"connect\"");
   }
 }
@@ -226,18 +223,26 @@ void setup() {
 
 void loop() {
   static unsigned long lastScan = 0;
-  if(millis() - lastScan > 3000){  // scan every 3 seconds
+  if(millis() - lastScan > 10000){  // scan every 10 seconds
     asyncDiscovery();
     lastScan = millis();
   }
   
   // No device found, try again
   if (!deviceFound) return;
+  // Stop bluetooth once a device has been found
+  // Wifi can now have the radio
+  SerialBT.end();
 
-  currentSong = getPreferedSong(STUDENT_ID, myDevice);
-  if(currentSong.length > 0 && myDevice == DEVICE1_NAME && !isPlaying) {
-    playSong(currentSong);
+  if(!isPlaying) {
+    getPreferedSong(STUDENT_ID, myDevice);
+    Song s = httpGET("/song?name=" + song_name);
+    playSong(s);
   } 
 
+  // reset values
+  myDevice = "";
+  deviceFound = false;
+  SerialBT.begin("ESP32 BT");
   delay(1000);
 }
