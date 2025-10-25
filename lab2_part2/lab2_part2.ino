@@ -9,11 +9,8 @@
 #define BUZZER_PIN 21
 #define PLAYLIST_MAX 5
 
-// Wifi info
-const char* ssid = "BELL892";
-const char* password = "1E7C373CF727";
-// const char *ssid = "iPhoneCamila"; // my hotspot
-// const char *password = "Nicolas19";
+const char *ssid = "iPhoneCamila"; // my hotspot
+const char *password = "soen422_lab";
 
 // Nordic UART Service UUIDs
 static NimBLEUUID NUS_SERVICE_UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");

@@ -14,7 +14,7 @@
 #endif
 
 const char *ssid = "iPhoneCamila"; // my hotspot
-const char *password = "Nicolas19";
+const char *password = "soen422_lab";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
