@@ -13,19 +13,20 @@
 #error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
 #endif
 
-// const char *ssid = "BELL892";
-// const char *password = "1E7C373CF727";
-const char *ssid = "iPhoneCamila"; // my hotspot
-const char *password = "Nicolas19";
+const char *ssid = "BELL892";
+const char *password = "1E7C373CF727";
+// const char *ssid = "iPhoneCamila"; // my hotspot
+// const char *password = "Nicolas19";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
 String DEVICE1_NAME = "iPhoneCamila";
-String DEVICE2_NAME = "Camila_MBP";
+String DEVICE2_NAME = "MBP_Camila";
 
 BluetoothSerial SerialBT;
 static bool btScanAsync = true;
-String discoveredDevice = "";
+String myDevice;
+bool deviceFound = false;
 
 struct Song {
   String name = "undefined";
@@ -34,15 +35,22 @@ struct Song {
   int length = 0;
 };
 
-Song toPlay;
+Song currentSong;
 bool isPlaying = false;
 
 void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
-  Serial.printf("Found a device asynchronously: %s\n", pDevice->toString().c_str());
-  discoveredDevice = pDevice->getName().c_str();
+  String discoveredDevice = pDevice->getName().c_str();
+  Serial.printf("Devices found: %s\n", discoveredDevice.c_str());
+  if(discoveredDevice == DEVICE1_NAME || discoveredDevice == DEVICE2_NAME) {
+    myDevice = pDevice->getName().c_str();
+    deviceFound = true;
+    Serial.println("Saved device: " + myDevice);
+    Serial.println("Stopping Bluetooth discovery...");
+    SerialBT.discoverAsyncStop();
+  }
 }
 
-void play(Song object) {
+void playSong(Song object) {
   int notes = object.length / 2;
   int wholenote = (60000 * 4) / object.tempo;
   int divider = 0, noteDuration = 0;
@@ -81,17 +89,16 @@ Song httpGET(String endpoint) {
 
   HTTPClient http;
   http.begin(BASE_URL + endpoint);
-
-  int httpResponseCode = http.GET();
+  int httpCode = http.GET();
   String payload = "";
 
-  if (httpResponseCode > 0) {
-    Serial.println("HTTP GET Response: " + String(httpResponseCode));
+  if (httpCode > 0) {
+    Serial.println("HTTP GET Response: " + String(httpCode));
     payload = http.getString();
     Serial.println(payload);
   }
   else {
-    Serial.println("HTTP GET Error: " + String(httpResponseCode));
+    Serial.println("HTTP GET Error: " + String(httpCode));
     return song;
   }
 
@@ -114,12 +121,10 @@ Song httpGET(String endpoint) {
   song.name = doc["name"].as<String>();
   song.tempo = doc["tempo"].as<int>();
   JsonArray melodyArr = doc["melody"].as<JsonArray>();
-  song.length = melodyArr.size();
-
   // Limit to avoid overflow (since melody[] has 50 elements)
-  song.length = min(song.length, 50);
+  song.length = min((int)melodyArr.size(), 50);
 
-  for (int i = 0; i < song.length; i++) {
+  for(int i = 0; i < song.length; i++) {
     song.melody[i] = melodyArr[i].as<int>();
   }
   
@@ -131,21 +136,20 @@ Song getSong(String song_name) {
 }
 
 Song getPreferedSong(String student_id, String device) {
-  Song emptySong;
-  if (WiFi.status() != WL_CONNECTED) return emptySong;
+  Song newSong;
+  if (WiFi.status() != WL_CONNECTED) return newSong;
 
   HTTPClient http;
   http.begin(BASE_URL + "/preference?id=" + student_id + "&key=" + device);
-
-  int httpResponseCode = http.GET(); // will only return the name of the prefered song of the linked device
+  int httpCode = http.GET(); // will only return the name of the prefered song of the linked device
   String payload = "";
 
-  if (httpResponseCode > 0) {
+  if (httpCode > 0) {
     payload = http.getString();
   }
   else {
-    Serial.println("HTTP GET Error: " + String(httpResponseCode));
-    return emptySong;
+    Serial.println("HTTP GET Error: " + String(httpCode));
+    return newSong;
   }
   http.end(); // Free resources
 
@@ -155,12 +159,12 @@ Song getPreferedSong(String student_id, String device) {
   if (error) {
     Serial.print("deserializeJson() failed: ");
     Serial.println(error.f_str());
-    return emptySong;
+    return newSong;
   }
   // Verify the fields are present
   if (!doc.containsKey("name")) {
     Serial.println("JSON missing required fields!");
-    return emptySong;
+    return newSong;
   }
   String song_name = doc["name"].as<String>(); // converts JSON string into a string C++ can accept
   return httpGET("/song?name=" + song_name);
@@ -173,39 +177,30 @@ void postDevice(String student_id, String device, String song_name) {
 
   HTTPClient http;
   http.begin(BASE_URL + endpoint);
-  int httpResponseCode = http.POST(""); // Send HTTP POST request
+  int httpCode = http.POST(""); // Send HTTP POST request
 
-  if (httpResponseCode > 0) {
-    Serial.println("HTTP POST Response: " + String(httpResponseCode));
+  if (httpCode > 0) {
+    Serial.println("HTTP POST Response: " + String(httpCode));
   }
   else {
-    Serial.println("HTTP POST Error: " + String(httpResponseCode));
+    Serial.println("HTTP POST Error: " + String(httpCode));
     return;
   }
   
   http.end(); // Free resources
 }
 
-void setup() {
-  // put your setup code here, to run once:
-  Serial.begin(115200);
-
-  // Connect WiFi first
+void setupWifi() {
   WiFi.begin(ssid, password);
-  Serial.println("Connecting");
+  Serial.println("Connecting to wifi...");
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("Connected to WiFi!");
+  Serial.println("\nConnected to wifi!");
+}
 
-  Serial.println("POST DEVICE");
-  postDevice(STUDENT_ID, DEVICE1_NAME, "harrypotter");
-
-  Serial.println("GET DEVICE");
-  toPlay = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
-
-  // Start Bluetooth without scanning
+void asyncDiscovery() {
   SerialBT.begin("ESP32test");  //Bluetooth device name
   Serial.println("The device started, now you can pair it with bluetooth!");
   if (btScanAsync) {
@@ -222,10 +217,25 @@ void setup() {
   }
 }
 
+void setup() {
+  // put your setup code here, to run once:
+  Serial.begin(115200);
+  SerialBT.begin("ESP32 BT");
+  pinMode(BUZZER_PIN, OUTPUT);
+  setupWifi();
+
+  postDevice(STUDENT_ID, DEVICE1_NAME, "jigglypuffsong");
+  postDevice(STUDENT_ID, DEVICE2_NAME, "zeldaslullaby");
+  currentSong = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
+
+  asyncDiscovery();
+}
+
 void loop() {
-  if (toPlay.length > 0 && discoveredDevice == DEVICE1_NAME && !isPlaying) {
-    play(toPlay);
+  if (currentSong.length > 0 && myDevice == DEVICE1_NAME && !isPlaying) {
+    playSong(currentSong);
   } else {
     Serial.println("No song received, skipping playback.");
+    delay(1000);
   }
 }
