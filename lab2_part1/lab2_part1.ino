@@ -13,10 +13,10 @@
 #error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
 #endif
 
-const char *ssid = "BELL892";
-const char *password = "1E7C373CF727";
-// const char *ssid = "iPhoneCamila"; // my hotspot
-// const char *password = "Nicolas19";
+// const char *ssid = "BELL892";
+// const char *password = "1E7C373CF727";
+const char *ssid = "iPhoneCamila"; // my hotspot
+const char *password = "Nicolas19";
 
 String BASE_URL = "https://iotjukebox.onrender.com";
 String STUDENT_ID = "40239038";
@@ -24,7 +24,6 @@ String DEVICE1_NAME = "iPhoneCamila";
 String DEVICE2_NAME = "MBP_Camila";
 
 BluetoothSerial SerialBT;
-static bool btScanAsync = true;
 String myDevice;
 bool deviceFound = false;
 
@@ -45,8 +44,6 @@ void btAdvertisedDeviceFound(BTAdvertisedDevice *pDevice) {
     myDevice = pDevice->getName().c_str();
     deviceFound = true;
     Serial.println("Saved device: " + myDevice);
-    Serial.println("Stopping Bluetooth discovery...");
-    SerialBT.discoverAsyncStop();
   }
 }
 
@@ -173,10 +170,9 @@ Song getPreferedSong(String student_id, String device) {
 void postDevice(String student_id, String device, String song_name) {
   if (WiFi.status() != WL_CONNECTED) return ;
 
-  String endpoint = "/preference?id=" + student_id + "&key=" + device + "&value=" + song_name;
-
+  String url = BASE_URL + "/preference?id=" + student_id + "&key=" + device + "&value=" + song_name;
   HTTPClient http;
-  http.begin(BASE_URL + endpoint);
+  http.begin(url);
   int httpCode = http.POST(""); // Send HTTP POST request
 
   if (httpCode > 0) {
@@ -201,41 +197,47 @@ void setupWifi() {
 }
 
 void asyncDiscovery() {
-  SerialBT.begin("ESP32test");  //Bluetooth device name
-  Serial.println("The device started, now you can pair it with bluetooth!");
-  if (btScanAsync) {
-    Serial.print("Starting asynchronous discovery... ");
-    if (SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
-      Serial.println("Findings will be reported in \"btAdvertisedDeviceFound\"");
-      delay(10000);
-      Serial.print("Stopping discoverAsync... ");
-      SerialBT.discoverAsyncStop();
-      Serial.println("stopped");
-    } else {
-      Serial.println("Error on discoverAsync f.e. not working after a \"connect\"");
-    }
+  // reset values
+  myDevice = "";
+  deviceFound = false;
+
+  Serial.print("Starting asynchronous discovery... ");
+  if(SerialBT.discoverAsync(btAdvertisedDeviceFound)) {
+    Serial.println("Findings will be reported in \"btAdvertisedDeviceFound\"");
+    // delay(10000);
+    Serial.print("Stopping discoverAsync... ");
+    SerialBT.discoverAsyncStop();
+  } 
+  else {
+    Serial.println("Error on discoverAsync f.e. not working after a \"connect\"");
   }
 }
 
 void setup() {
   // put your setup code here, to run once:
   Serial.begin(115200);
-  SerialBT.begin("ESP32 BT");
   pinMode(BUZZER_PIN, OUTPUT);
   setupWifi();
 
   postDevice(STUDENT_ID, DEVICE1_NAME, "jigglypuffsong");
   postDevice(STUDENT_ID, DEVICE2_NAME, "zeldaslullaby");
-  currentSong = getPreferedSong(STUDENT_ID, DEVICE1_NAME);
-
-  asyncDiscovery();
+  SerialBT.begin("ESP32 BT");
 }
 
 void loop() {
-  if (currentSong.length > 0 && myDevice == DEVICE1_NAME && !isPlaying) {
-    playSong(currentSong);
-  } else {
-    Serial.println("No song received, skipping playback.");
-    delay(1000);
+  static unsigned long lastScan = 0;
+  if(millis() - lastScan > 3000){  // scan every 3 seconds
+    asyncDiscovery();
+    lastScan = millis();
   }
+  
+  // No device found, try again
+  if (!deviceFound) return;
+
+  currentSong = getPreferedSong(STUDENT_ID, myDevice);
+  if(currentSong.length > 0 && myDevice == DEVICE1_NAME && !isPlaying) {
+    playSong(currentSong);
+  } 
+
+  delay(1000);
 }
