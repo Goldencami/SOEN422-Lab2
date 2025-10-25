@@ -6,7 +6,6 @@
 #include <BLEUtils.h>
 #include <BLEServer.h>
 #include <BLE2902.h>
-#include <vector>
 #define BUZZER_PIN 21
 #define PLAYLIST_MAX 20
 #define BATCH_SIZE 5
