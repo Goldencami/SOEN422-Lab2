@@ -1,239 +1,358 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
-#include <NimBLEDevice.h>
+#include <BLEDevice.h>
+#include <BLEUtils.h>
+#include <BLEServer.h>
+#include <BLE2902.h>
+#include <vector>
 #define BUZZER_PIN 21
+#define BATCH_SIZE 5
 
-NimBLEServer* pServer = nullptr;
-NimBLECharacteristic* pRxCharacteristic;
-NimBLECharacteristic* pTxCharacteristic;
-bool deviceConnected = false;
+// Wifi credentials
+const char* ssid = "BELL892";
+const char* password = "1E7C373CF727";
 
-#define SERVICE_UUID          "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+// BLE UART UUIDs
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
 #define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
 
-class RxCallback : public NimBLECharacteristicCallbacks {
-  void onWrite(NimBLECharacteristic *pCharacteristic) {  // pointer version is safe
-    std::string rxValue = pCharacteristic->getValue();
-    if (rxValue.length() > 0) {
-      Serial.print("Received from Bluefruit: ");
-      Serial.println(rxValue.c_str());
+BLEAdvertising* pAdvertising = nullptr;
+BLECharacteristic* pTxCharacteristic;
+bool deviceConnected = false;
+SemaphoreHandle_t playlistMutex;
 
-      // Add song control from app
-      getCommand(rxValue.c_str());
-    }
-  }
-};
-
-class ServerCallbacks : public NimBLEServerCallbacks {
-  void onConnect(NimBLEServer *pServer) {
-    Serial.println("Phone connected via BLE");
-  }
-
-  void onDisconnect(NimBLEServer *pServer) {
-    Serial.println("Phone disconnected");
-    NimBLEDevice::startAdvertising();
-  }
-};
-
-// ====== WiFi ======
-// const char *ssid = "BELL892";
-// const char *password = "1E7C373CF727";
-const char *ssid = "iPhoneCamila"; // my hotspot
-const char *password = "Nicolas19";
+// ====== Functions signature ======
+void startSong(int index);
+void fetchSongsBatch();
 
 // ====== Song Struct ======
 struct Song {
   String name = "undefined";
-  int tempo;
-  int melody[50];
+  int tempo = 120;
+  int melody[50] = {0};
   int length = 0;
 };
 
-bool isPlaying = false;
-Song pendingSong;
-bool songReady = false;
+// ====== Playlist Variables ======
+std::vector<Song> PlayList;
+Song* currentSong = nullptr;
+int currentSongIndex = 0;  // index for playlist
+int currentNoteIndex = 0;
+unsigned long nextNoteTime = 0;
+int noteDuration = 0;
+bool isPlaying = true;
+bool fetchNextSongFlag = false; // to avoid fetching new batch more than once
 
-// ====== Plays song ======
-void play(Song object) {
-  int notes = object.length / 2;
-  int wholenote = (60000 * 4) / object.tempo;
-  int divider = 0, noteDuration = 0;
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* pServer) { 
+    deviceConnected = true; 
+    Serial.println("BLE connected");
+  }
+  void onDisconnect(BLEServer* pServer) { 
+    deviceConnected = false; 
+    Serial.println("BLE disconnected"); 
+  }
+};
 
-  // iterate over the notes of the melody.
-  // Remember, the array is twice the number of notes (notes + durations)
-  for (int thisNote = 0; thisNote < notes * 2; thisNote = thisNote + 2) {
-    // calculates the duration of each note
-    divider = object.melody[thisNote + 1];
-    if (divider > 0) {
-      // regular note, just proceed
-      noteDuration = (wholenote) / divider;
-    } else if (divider < 0) {
-      // dotted notes are represented with negative durations!!
-      noteDuration = (wholenote) / abs(divider);
-      noteDuration *= 1.5; // increases the duration in half for dotted notes
+class MyCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* pCharacteristic) {
+    String val = pCharacteristic->getValue().c_str();
+
+    if (val.length() == 0) return;
+
+    char cmd = val[0];
+    switch(cmd) {
+      case 'P': // Pause/Play song
+        isPlaying = !isPlaying; 
+        Serial.printf("Play toggle -> %d\n", isPlaying); 
+        break;
+      case 'N': // Next song
+        if(currentSongIndex < PlayList.size() - 1) {
+          startSong(currentSongIndex + 1);
+        } 
+        else {
+          fetchNextSongFlag = true; // fetch new batch
+        }
+        break;
+      case 'B': // Previous song
+        if (PlayList.size() > 0 && currentSongIndex > 0) {
+          startSong(currentSongIndex - 1);
+          break;
+        }
+    }
+  }
+};
+// ====== Wifi Setup ======
+bool connectWiFi() {
+  if (WiFi.status() == WL_CONNECTED) {
+    return true;
+  }
+
+  Serial.println("Connecting to Wifi...");
+  WiFi.disconnect(true); // fresh connection, avoid connecting to a previous network
+  WiFi.begin(ssid, password);
+
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 20) {
+    delay(250); 
+    Serial.print(".");
+    retries++;
+  }
+  Serial.println();
+
+  // In case wifi ever gets disconnected
+  if (WiFi.status() != WL_CONNECTED) {
+    return false;
+  }
+
+  Serial.println("Wifi connected");
+  delay(200); // stabilization
+
+  return true;
+}
+
+// ====== BLE Setup ======
+void startBLE() {
+  BLEDevice::init("TTGO_Jukebox");
+  BLEServer* pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+  BLEService* pService = pServer->createService(SERVICE_UUID);
+
+  pTxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_TX, BLECharacteristic::PROPERTY_NOTIFY);
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  BLECharacteristic* pRxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_WRITE);
+  pRxCharacteristic->setCallbacks(new MyCallbacks());
+  pService->start();
+
+  pAdvertising = BLEDevice::getAdvertising();
+  pAdvertising->addServiceUUID(SERVICE_UUID);
+  pAdvertising->setMinInterval(3200);
+  pAdvertising->setMaxInterval(4000);
+  pAdvertising->start();
+  Serial.println("BLE resumed and advertising...");
+}
+
+void stopBLE() {
+  if (pAdvertising) pAdvertising->stop();
+  BLEDevice::deinit(true);
+  Serial.println("BLE stopped");
+}
+
+// ====== Songs Functions ======
+void play() {
+  if (!isPlaying) return;
+
+  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+    if (!currentSong) {
+      xSemaphoreGive(playlistMutex);
+      return;
     }
 
-    // we only play the note for 90% of the duration, leaving 10% as a pause
-    tone(BUZZER_PIN, object.melody[thisNote], noteDuration * 0.9);
+    unsigned long now = millis();
+    if (now >= nextNoteTime) {
+      if (currentNoteIndex >= currentSong->length) {
+        currentNoteIndex = 0;
+        currentSongIndex++;
 
-    // Wait for the specief duration before playing the next note.
-    delay(noteDuration);
+        if (currentSongIndex >= PlayList.size()) {
+          fetchNextSongFlag = true;
+        } 
+        else {
+          startSong(currentSongIndex);
+        }
 
-    // stop the waveform generation before the next note.
-    noTone(BUZZER_PIN);
+        xSemaphoreGive(playlistMutex);
+        return;
+      }
+
+      int pitch = currentSong->melody[currentNoteIndex];
+      int divider = currentSong->melody[currentNoteIndex + 1];
+      int wholenote = (60000 * 4) / currentSong->tempo;
+
+      if (divider > 0) {
+        noteDuration = wholenote / divider;
+      }
+      else if (divider < 0) {
+        noteDuration = (wholenote / abs(divider)) * 1.5;
+      }
+      else {
+        noteDuration = wholenote / 4;
+      }
+
+      if (pitch > 0) {
+        tone(BUZZER_PIN, constrain(pitch, 100, 5000), noteDuration * 0.9);
+      }
+      else {
+        noTone(BUZZER_PIN);
+      }
+
+      nextNoteTime = now + noteDuration;
+      currentNoteIndex += 2;
+    }
+    xSemaphoreGive(playlistMutex);
   }
 }
 
-// ====== HTTP Request to API ======
-Song httpGET(String payload) {
-  Song song;
-  DynamicJsonDocument doc(1024);
+Song fetchSong() {
+  Song newSong;
 
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, "https://iotjukebox.onrender.com/song");
+  http.setTimeout(7000);
+  int httpCode = http.GET();
+  String payload = "";
+
+  if(httpCode > 0) {
+    payload = http.getString();
+  }
+  else {
+    Serial.println("HTTP GET Error: " + String(httpCode));
+    return newSong;
+  }
+  http.end(); // Free resources
+
+  DynamicJsonDocument doc(1024);
   // Read the JSON document received from the API
   DeserializationError error = deserializeJson(doc, payload);
   if (error) {
     Serial.print("deserializeJson() failed: ");
     Serial.println(error.f_str());
-    return song;
+    return newSong;
   }
   // Verify the fields are present
   if (!doc.containsKey("name") || !doc.containsKey("tempo") || !doc.containsKey("melody")) {
     Serial.println("JSON missing required fields!");
-    return song;
+    return newSong;
   }
 
-  song.name = doc["name"].as<String>();
-  song.tempo = doc["tempo"].as<int>();
+  newSong.name = doc["name"].as<String>();
+  newSong.tempo = doc["tempo"].as<int>();
   JsonArray melodyArr = doc["melody"].as<JsonArray>();
-  song.length = melodyArr.size();
+  newSong.length = melodyArr.size();
 
   // Limit to avoid overflow (since melody[] has 50 elements)
-  song.length = min(song.length, 50);
-
-  for (int i = 0; i < song.length; i++) {
-    song.melody[i] = melodyArr[i].as<int>();
+  newSong.length = min(newSong.length, 50);
+  for (int i = 0; i < newSong.length; i++) {
+    newSong.melody[i] = melodyArr[i].as<int>();
   }
-  
-  return song;
+
+  WiFi.disconnect(true); // turn off Wifi after fetch
+  Serial.println("Wifi stopped");
+  return newSong;
 }
 
-void getCommand(const char* rxValue) { // return string
-  if(rxValue == "!B813") { // -> button
-    Serial.println("Next song");
-    // fetch and play next song from API
-    songReady = true;
-  }
-  else if(rxValue == "!B714") { // <- button
-    Serial.println("Previous song");
-    // handle previous song logic
-    songReady = true;
-  }
-  else if(rxValue == "!B219") { // 2 button
-    Serial.println("Play/Pause song");
-    // handle previous song logic
-    songReady = true;
-    
-    if(isPlaying) {
-      noTone(BUZZER_PIN);
-      isPlaying = false;
-    } 
-    else {
-      play(pendingSong);
-      isPlaying = true;
+// Loads song from queue
+// Reset playlist variables (currentNoteIndex, nextNoteTime, ...)
+void startSong(int index) {
+  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+    if (PlayList.empty()) {
+      Serial.println("No songs in playlist!");
+      xSemaphoreGive(playlistMutex);
+      return;
     }
+    // handle error
+    if (index < 0 || index >= PlayList.size()) index = 0;
+
+    currentSongIndex = index;
+    currentSong = &PlayList[currentSongIndex]; // don't make a copy, get direct address 
+    currentNoteIndex = 0;
+    nextNoteTime = millis();
+    isPlaying = true;
+
+    Serial.println("Now playing: " + currentSong->name + " (index " + String(currentSongIndex) + ")");
+    xSemaphoreGive(playlistMutex);
   }
 }
 
-// ====== Wi-Fi connect ======
-void connectWiFi() {
-  if (WiFi.status() == WL_CONNECTED) return;
-  
-  WiFi.mode(WIFI_STA);
-  WiFi.setSleep(false);
-  WiFi.begin(ssid, password);
-  Serial.printf("[WiFi] Connecting to %s\n", ssid);
+// have a limit of playlist having 20 songs
+void addSongToPlaylist(Song s) {
+  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+    if (PlayList.size() >= 20) {
+      PlayList.clear(); // remove all songs
+      currentSong = nullptr;
+      currentSongIndex = 0;
+      currentNoteIndex = 0;
+      nextNoteTime = 0;
+      fetchNextSongFlag = true; // trigger fetch of new batch
+    }
 
-  unsigned long start = millis();
-
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 15000) {
-    delay(250);
-    Serial.print(".");
-  }
-
-  if (WiFi.status() == WL_CONNECTED) {
-    Serial.printf("\n[WiFi] Connected, IP: %s\n", WiFi.localIP().toString().c_str());
-  }
-  else {
-    Serial.println("\n[WiFi] Failed, retry later");
+    PlayList.push_back(s);
+    xSemaphoreGive(playlistMutex);
   }
 }
 
-// ====== BLE Setup ======
-void setupBLE() {
-  // Start BLE after WiFi is stable
-  NimBLEDevice::init("ESP32 BLE UART");
-  NimBLEDevice::setPower(ESP_PWR_LVL_N0);
-  pServer = NimBLEDevice::createServer();
-  pServer->setCallbacks(new ServerCallbacks());
+// Wifi and BLE run in the same radio, but BLE has more priority.
+// This causes wifi's connection to server to be interrupted by BLE
+// SOLUTION: completely stop BLE when wifi needs to run, then restart it
+void fetchSongsBatch(void* param) {
+  // Stop BLE completely, stops advertising and deinitializes BLE
+  for(;;) {
+    if(fetchNextSongFlag){
+      Serial.println("Stopping BLE for Wi-Fi batch fetch...");
+      stopBLE();
 
-  NimBLEService* pService = pServer->createService(SERVICE_UUID);
+      if(connectWiFi()) {  // connect once per batch
+        Serial.println("Fetching new batch...");
+        for(int i=0; i<BATCH_SIZE; i++) {
+          Song s = fetchSong();  // use the updated function
+          if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+            addSongToPlaylist(s);
+            Serial.println(String(s.name) + " added to playlist.");
+            xSemaphoreGive(playlistMutex);
+          }
+        }
 
-  // TX characteristic (ESP32 -> phone)
-  pTxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_TX,
-    NIMBLE_PROPERTY::NOTIFY
-  );
+        WiFi.disconnect(true); // disconnect once after batch
+        Serial.println("Wifi stopped");
+      }
 
-  // RX characteristic (phone -> ESP32)
-  pRxCharacteristic = pService->createCharacteristic(
-    CHARACTERISTIC_UUID_RX,
-    NIMBLE_PROPERTY::WRITE
-  );
-  pRxCharacteristic->setCallbacks(new RxCallback());
-
-  pService->start();
-
-  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
-  pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->start();
-  Serial.println("BLE advertising started");
+      Serial.println("Restarting BLE...");
+      startBLE();
+      // safely start the first song of the new batch
+      if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+        fetchNextSongFlag = false;
+        startSong(PlayList.size() - BATCH_SIZE);
+        xSemaphoreGive(playlistMutex);
+      }
+    }
+    vTaskDelay(50/portTICK_PERIOD_MS);
+  }
 }
 
 void setup() {
   Serial.begin(115200);
+  pinMode(BUZZER_PIN, OUTPUT);
+  playlistMutex = xSemaphoreCreateMutex();
+  if (!playlistMutex) {
+    Serial.println("Failed to create mutex!");
+  }
 
-  // Connect BLE first
-  connectWiFi();
-  setupBLE();
+  if (xSemaphoreTake(playlistMutex, (TickType_t)50) == pdTRUE) {
+    Serial.println("Fetching initial songs...");
+    for(int i=0; i < BATCH_SIZE; i++) {
+      Song s = fetchSong();
+      addSongToPlaylist(s);
+      Serial.println(String(s.name) + " added to playlist.");
+    }
+    xSemaphoreGive(playlistMutex);
+  }
+
+  if (!PlayList.empty()) {
+    startSong(0);
+  }
+
+  // Start BLE
+  startBLE();
+  // Fetches songs in the background
+  // Allows BLE and playback to keep running while fetching new songs
+  xTaskCreate(fetchSongsBatch, "FetchTask", 16384, NULL, 1, NULL);
 }
 
 void loop() {
-  if(WiFi.status() == WL_CONNECTED) {
-    if(!isPlaying) {
-      HTTPClient http;
-      http.begin("https://iotjukebox.onrender.com/song");
-      int httpResponseCode = http.GET();
-
-      if(httpResponseCode > 0) {
-        Serial.println("HTTP GET Response: " + String(httpResponseCode));
-        String payload = http.getString();
-        Serial.println(payload);
-
-        pendingSong = httpGET(payload);
-      }
-      else {
-        Serial.println("HTTP GET Error: " + String(httpResponseCode));
-      }
-      http.end(); // Free resources
-
-      isPlaying = true;
-      play(pendingSong);
-      isPlaying = false;
-      songReady = false; // reset after playing
-    }
-  }
-
-  delay(500); // short delay to avoid continuous HTTP
+  play();
 }
