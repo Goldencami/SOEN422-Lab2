@@ -13,8 +13,6 @@
 #error Serial Bluetooth not available or not enabled. It is only available for the ESP32 chip.
 #endif
 
-// const char *ssid = "BELL892";
-// const char *password = "1E7C373CF727";
 const char *ssid = "iPhoneCamila"; // my hotspot
 const char *password = "Nicolas19";
 
