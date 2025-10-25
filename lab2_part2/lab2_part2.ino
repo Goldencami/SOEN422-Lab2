@@ -131,8 +131,6 @@ void startBLE() {
 
   pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setMinInterval(0x20);
-  pAdvertising->setMaxInterval(0x40);
   pAdvertising->start();
   Serial.println("BLE resumed and advertising...");
 }
