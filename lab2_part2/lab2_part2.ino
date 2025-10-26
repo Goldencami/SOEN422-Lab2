@@ -246,22 +246,32 @@ void playSong() {
     return;
   }
 
-  // Play current note
+  static bool inPause = false;
+  static unsigned long pauseStart = 0;
+
   int pitch = currentSong->melody[noteIndex];
-  int divider = (noteIndex + 1 < currentSong->length) ? currentSong->melody[noteIndex + 1] : 4;
+  int divider = currentSong->melody[noteIndex + 1];
   int wholenote = (60000 * 4) / currentSong->tempo;
-  unsigned long duration = (divider > 0) ? wholenote / divider : (wholenote / abs(divider)) * 1.5;
+  unsigned long noteDuration = (divider > 0 ? wholenote / divider : (wholenote / abs(divider)) * 1.5);
+  unsigned long playDuration = noteDuration * 0.9; // 90% for note, 10% pause
 
   if(!notePlaying) {
-    tone(BUZZER_PIN, pitch, duration);
+    if(pitch != 0) tone(BUZZER_PIN, pitch); // play the note
     noteStartTime = millis();
     notePlaying = true;
+    inPause = false;
   }
 
-  if(millis() - noteStartTime >= duration) {
+  if(!inPause && millis() - noteStartTime >= playDuration) {
     noTone(BUZZER_PIN);
-    noteIndex += 2;  // move to next note pair
+    inPause = true;
+    pauseStart = millis();
+  }
+
+  if(inPause && millis() - pauseStart >= (noteDuration - playDuration)) {
+    noteIndex += 2;   // next note
     notePlaying = false;
+    inPause = false;
   }
 }
 
