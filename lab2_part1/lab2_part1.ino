@@ -235,7 +235,7 @@ void loop() {
   // Wifi can now have the radio
   SerialBT.end();
 
-  if(!isPlaying) {
+  if(!isPlaying && deviceFound) {
     getPreferedSong(STUDENT_ID, myDevice);
     Song s = httpGET("/song?name=" + song_name);
     playSong(s);

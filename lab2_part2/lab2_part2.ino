@@ -17,6 +17,7 @@ static NimBLEUUID NUS_SERVICE_UUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
 static NimBLEUUID NUS_RX_UUID     ("6E400002-B5A3-F393-E0A9-E50E24DCCA9E");
 static NimBLEUUID NUS_TX_UUID     ("6E400003-B5A3-F393-E0A9-E50E24DCCA9E");
 NimBLECharacteristic* g_rxChar = nullptr;
+bool isConnected = false;
 
 // Song Struct
 struct Song {
@@ -40,6 +41,21 @@ volatile bool skipPrev = false;
 volatile bool paused = false;
 volatile bool isPlaying = false;
 volatile bool songFinished = false;
+
+// server callback
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+    Serial.println("BLE device connected!");
+    isConnected = true;
+  }
+
+  void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+    Serial.println("BLE device disconnected!");
+    // Start advertising again so a client can reconnect
+    NimBLEDevice::startAdvertising();
+    isConnected = false;
+  }
+};
 
 // BLE receive callback
 class RxCallbacks : public NimBLECharacteristicCallbacks {
@@ -95,6 +111,7 @@ void setupBLE() {
 
   // Create server
   NimBLEServer* server = NimBLEDevice::createServer();
+  server->setCallbacks(new ServerCallbacks());
   // Create NUS service
   NimBLEService* nus = server->createService(NUS_SERVICE_UUID);
   // TX characteristic 
@@ -300,6 +317,8 @@ void setup() {
 }
 
 void loop() {
-  playSong();
+  if(isConnected) {
+    playSong();
+  }
   delay(1); // tiny yield
 }
