@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <BluetoothSerial.h>
 #define BUZZER_PIN 21
@@ -24,6 +25,7 @@ String DEVICE2_NAME = "MBP_Camila";
 BluetoothSerial SerialBT;
 String myDevice;
 bool deviceFound = false;
+WiFiClientSecure secureClient;
 
 struct Song {
   String name = "undefined";
@@ -86,7 +88,7 @@ Song httpGET(String endpoint) {
   if (WiFi.status() != WL_CONNECTED) return song; // don't continue if there's no wifi
 
   HTTPClient http;
-  http.begin(BASE_URL + endpoint);
+  http.begin(secureClient, BASE_URL + endpoint);
   int httpCode = http.GET();
   String payload = "";
 
@@ -213,6 +215,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(BUZZER_PIN, OUTPUT);
   setupWifi();
+  secureClient.setInsecure();
 
   postDevice(STUDENT_ID, DEVICE1_NAME, "jigglypuffsong");
   postDevice(STUDENT_ID, DEVICE2_NAME, "zeldaslullaby");
