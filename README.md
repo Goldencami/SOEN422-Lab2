@@ -30,3 +30,18 @@ This first part of the lab consist of scanning nearby bluetooth devices until it
 In the second part of the lab, we recreate a playlist by using an interface through the application Bluefruit Connect. When the system starts, 5 random songs are fetched and stored in a queue to recreate a playlist. Later we can start using the following functions through BLE: play, pause, next song, previous song. These functionalities allow us to keep track of the songs in the list.
 
 In addition, if there are songs ahead of the current song in the queue it should play those in order, if we are already at the tail of the queue the next song will be a random song using the GET `/song` endpoint.
+
+# Notes
+When adding both Bluetooth and wifi packages to the TTGO there is a possibility your program exceeds the memory limitation on the TTGO. Do not worry the configuration limits the memory at the software level, in other words there is more memory to be used!
+1. Edit the 'boards.txt' file so that the value of the maximum upload size changes from its default 1310720 to 3407872. This .txt file can be found in your ArduinoData folder if you properly installed ESP32 in the boards manager for the firsts labs:
+`\ArduinoData\packages\esp32\hardware\esp32\2.0.5\boards.txt`
+
+2. Create a new .csv file named "default" or “partition” inside the folder of your sketch, with the following partition scheme:
+```bash
+# Name, Type, SubType, Offset, Size, Flags
+nvs, data, nvs, 0x9000, 0x5000,
+otadata, data, ota, 0xe000, 0x2000,
+app0, app, ota_0, 0x10000, 0x340000,
+eeprom, data, 0x99, 0x350000, 0x1000,
+spiffs, data, spiffs, 0x351000, 0xAF000,
+```
